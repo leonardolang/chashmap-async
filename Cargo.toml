@@ -1,5 +1,5 @@
 [package]
-name = "chashmap"
+name = "chashmap-next"
 version = "2.2.2"
 authors = ["ticki <Ticki@users.noreply.github.com>"]
 description = "Fast, concurrent hash maps with extensive API."
