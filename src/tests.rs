@@ -8,309 +8,312 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::thread;
+use crate::{CHashMap, MAX_LOAD_FACTOR_DENOM};
 use std::cell::RefCell;
 use std::sync::Arc;
-use CHashMap;
-use MAX_LOAD_FACTOR_DENOM;
+
+use tokio::{task, test};
 
 #[test]
-fn spam_insert() {
-    let m = Arc::new(CHashMap::new());
+async fn spam_insert() {
+    let map = Arc::new(CHashMap::new());
     let mut joins = Vec::new();
 
     for t in 0..10 {
-        let m = m.clone();
-        joins.push(thread::spawn(move || {
+        let map = map.clone();
+        joins.push(task::spawn(async move {
             for i in t * 1000..(t + 1) * 1000 {
-                assert!(m.insert(i, !i).is_none());
-                assert_eq!(m.insert(i, i).unwrap(), !i);
+                assert!(map.insert(i, !i).await.is_none());
+                assert_eq!(map.insert(i, i).await.unwrap(), !i);
             }
         }));
     }
 
     for j in joins.drain(..) {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 
     for t in 0..5 {
-        let m = m.clone();
-        joins.push(thread::spawn(move || {
+        let map = map.clone();
+        joins.push(task::spawn(async move {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
+                assert_eq!(*map.get(&i).await.unwrap(), i);
             }
         }));
     }
 
     for j in joins {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 }
 
 #[test]
-fn spam_insert_new() {
+async fn spam_insert_new() {
     let m = Arc::new(CHashMap::new());
     let mut joins = Vec::new();
 
     for t in 0..10 {
         let m = m.clone();
-        joins.push(thread::spawn(move || {
+        joins.push(task::spawn(async move {
             for i in t * 1000..(t + 1) * 1000 {
-                m.insert_new(i, i);
+                m.insert_new(i, i).await;
+            }
+        }));
+    }
+
+    for join in joins.drain(..) {
+        join.await.unwrap();
+    }
+
+    for t in 0..5 {
+        let m = m.clone();
+        joins.push(task::spawn(async move {
+            for i in t * 2000..(t + 1) * 2000 {
+                assert_eq!(*m.get(&i).await.unwrap(), i);
+            }
+        }));
+    }
+
+    for join in joins {
+        join.await.unwrap();
+    }
+}
+
+#[test]
+async fn spam_upsert() {
+    let m = Arc::new(CHashMap::new());
+    let mut joins = Vec::new();
+
+    for t in 0..10 {
+        let m = m.clone();
+        joins.push(task::spawn(async move {
+            for i in t * 1000..(t + 1) * 1000 {
+                m.upsert(i, || !i, |_| unreachable!()).await;
+                m.upsert(i, || unreachable!(), |x| *x = !*x).await;
             }
         }));
     }
 
     for j in joins.drain(..) {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 
     for t in 0..5 {
         let m = m.clone();
-        joins.push(thread::spawn(move || {
+        joins.push(task::spawn(async move {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
+                assert_eq!(*m.get(&i).await.unwrap(), i);
             }
         }));
     }
 
     for j in joins {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 }
 
 #[test]
-fn spam_upsert() {
+async fn spam_alter() {
     let m = Arc::new(CHashMap::new());
     let mut joins = Vec::new();
 
     for t in 0..10 {
         let m = m.clone();
-        joins.push(thread::spawn(move || {
+        joins.push(task::spawn(async move {
             for i in t * 1000..(t + 1) * 1000 {
-                m.upsert(i, || !i, |_| unreachable!());
-                m.upsert(i, || unreachable!(), |x| *x = !*x);
-            }
-        }));
-    }
-
-    for j in joins.drain(..) {
-        j.join().unwrap();
-    }
-
-    for t in 0..5 {
-        let m = m.clone();
-        joins.push(thread::spawn(move || {
-            for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
-            }
-        }));
-    }
-
-    for j in joins {
-        j.join().unwrap();
-    }
-}
-
-#[test]
-fn spam_alter() {
-    let m = Arc::new(CHashMap::new());
-    let mut joins = Vec::new();
-
-    for t in 0..10 {
-        let m = m.clone();
-        joins.push(thread::spawn(move || {
-            for i in t * 1000..(t + 1) * 1000 {
-                m.alter(i, |x| {
+                m.alter(i, |x| async move {
                     assert!(x.is_none());
                     Some(!i)
-                });
-                m.alter(i, |x| {
+                })
+                .await;
+                m.alter(i, |x| async move {
                     assert_eq!(x, Some(!i));
                     Some(!x.unwrap())
-                });
+                })
+                .await;
             }
         }));
     }
 
     for j in joins.drain(..) {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 
     for t in 0..5 {
         let m = m.clone();
-        joins.push(thread::spawn(move || {
+        joins.push(task::spawn(async move {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
-                m.alter(i, |_| None);
-                assert!(m.get(&i).is_none());
+                assert_eq!(*m.get(&i).await.unwrap(), i);
+                m.alter(i, |_| async { None }).await;
+                assert!(m.get(&i).await.is_none());
             }
         }));
     }
 
     for j in joins {
-        j.join().unwrap();
+        j.await.unwrap();
     }
 }
 
 #[test]
-fn lock_compete() {
+async fn lock_compete() {
     let m = Arc::new(CHashMap::new());
 
-    m.insert("hey", "nah");
+    m.insert("hey", "nah").await;
 
     let k = m.clone();
-    let a = thread::spawn(move || {
-        *k.get_mut(&"hey").unwrap() = "hi";
+    let a = task::spawn(async move {
+        *k.get_mut(&"hey").await.unwrap() = "hi";
     });
     let k = m.clone();
-    let b = thread::spawn(move || {
-        *k.get_mut(&"hey").unwrap() = "hi";
+    let b = task::spawn(async move {
+        *k.get_mut(&"hey").await.unwrap() = "hi";
     });
 
-    a.join().unwrap();
-    b.join().unwrap();
+    a.await.unwrap();
+    b.await.unwrap();
 
-    assert_eq!(*m.get(&"hey").unwrap(), "hi");
+    assert_eq!(*m.get(&"hey").await.unwrap(), "hi");
 }
 
 #[test]
-fn simultanous_reserve() {
+async fn simultanous_reserve() {
     let m = Arc::new(CHashMap::new());
     let mut joins = Vec::new();
 
-    m.insert(1, 2);
-    m.insert(3, 6);
-    m.insert(8, 16);
+    m.insert(1, 2).await;
+    m.insert(3, 6).await;
+    m.insert(8, 16).await;
 
     for _ in 0..10 {
         let m = m.clone();
-        joins.push(thread::spawn(move || {
-            m.reserve(1000);
+        joins.push(task::spawn(async move {
+            m.reserve(1000).await;
         }));
     }
 
     for j in joins {
-        j.join().unwrap();
+        j.await.unwrap()
     }
 
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&3).unwrap(), 6);
-    assert_eq!(*m.get(&8).unwrap(), 16);
+    assert_eq!(*m.get(&1).await.unwrap(), 2);
+    assert_eq!(*m.get(&3).await.unwrap(), 6);
+    assert_eq!(*m.get(&8).await.unwrap(), 16);
 }
 
 #[test]
-fn create_capacity_zero() {
+async fn create_capacity_zero() {
     let m = CHashMap::with_capacity(0);
 
-    assert!(m.insert(1, 1).is_none());
+    assert!(m.insert(1, 1).await.is_none());
 
-    assert!(m.contains_key(&1));
-    assert!(!m.contains_key(&0));
+    assert!(m.contains_key(&1).await);
+    assert!(!m.contains_key(&0).await);
 }
 
 #[test]
-fn insert() {
+async fn insert() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    assert!(m.insert(1, 2).is_none());
+    assert!(m.insert(1, 2).await.is_none());
     assert_eq!(m.len(), 1);
-    assert!(m.insert(2, 4).is_none());
+    assert!(m.insert(2, 4).await.is_none());
     assert_eq!(m.len(), 2);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&2).unwrap(), 4);
+    assert_eq!(*m.get(&1).await.unwrap(), 2);
+    assert_eq!(*m.get(&2).await.unwrap(), 4);
 }
 
 #[test]
-fn upsert() {
+async fn upsert() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    m.upsert(1, || 2, |_| unreachable!());
+    m.upsert(1, || 2, |_| unreachable!()).await;
     assert_eq!(m.len(), 1);
-    m.upsert(2, || 4, |_| unreachable!());
+    m.upsert(2, || 4, |_| unreachable!()).await;
     assert_eq!(m.len(), 2);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&2).unwrap(), 4);
+    assert_eq!(*m.get(&1).await.unwrap(), 2);
+    assert_eq!(*m.get(&2).await.unwrap(), 4);
 }
 
 #[test]
-fn upsert_update() {
+async fn upsert_update() {
     let m = CHashMap::new();
-    m.insert(1, 2);
-    m.upsert(1, || unreachable!(), |x| *x += 2);
-    m.insert(2, 3);
-    m.upsert(2, || unreachable!(), |x| *x += 3);
-    assert_eq!(*m.get(&1).unwrap(), 4);
-    assert_eq!(*m.get(&2).unwrap(), 6);
+    m.insert(1, 2).await;
+    m.upsert(1, || unreachable!(), |x| *x += 2).await;
+    m.insert(2, 3).await;
+    m.upsert(2, || unreachable!(), |x| *x += 3).await;
+    assert_eq!(*m.get(&1).await.unwrap(), 4);
+    assert_eq!(*m.get(&2).await.unwrap(), 6);
 }
 
 #[test]
-fn alter_string() {
+async fn alter_string() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    m.alter(1, |_| Some(String::new()));
+    m.alter(1, |_| async { Some(String::new()) }).await;
     assert_eq!(m.len(), 1);
-    m.alter(1, |x| {
+    m.alter(1, |x| async {
         let mut x = x.unwrap();
         x.push('a');
         Some(x)
-    });
+    })
+    .await;
     assert_eq!(m.len(), 1);
-    assert_eq!(&*m.get(&1).unwrap(), "a");
+    assert_eq!(&*m.get(&1).await.unwrap(), "a");
 }
 
 #[test]
-fn clear() {
+async fn clear() {
+    let map = CHashMap::new();
+    assert!(map.insert(1, 2).await.is_none());
+    assert!(map.insert(2, 4).await.is_none());
+    assert_eq!(map.len(), 2);
+
+    let transfer = map.clear().await;
+    assert_eq!(transfer.len(), 2);
+    assert_eq!(*transfer.get(&1).await.unwrap(), 2);
+    assert_eq!(*transfer.get(&2).await.unwrap(), 4);
+
+    assert!(map.is_empty());
+    assert_eq!(map.len(), 0);
+
+    assert_eq!(map.get(&1).await, None);
+    assert_eq!(map.get(&2).await, None);
+}
+
+#[test]
+async fn clear_with_retain() {
     let m = CHashMap::new();
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(2, 4).is_none());
+    assert!(m.insert(1, 2).await.is_none());
+    assert!(m.insert(2, 4).await.is_none());
     assert_eq!(m.len(), 2);
 
-    let om = m.clear();
-    assert_eq!(om.len(), 2);
-    assert_eq!(*om.get(&1).unwrap(), 2);
-    assert_eq!(*om.get(&2).unwrap(), 4);
+    m.retain(|_, _| false).await;
 
     assert!(m.is_empty());
     assert_eq!(m.len(), 0);
 
-    assert_eq!(m.get(&1), None);
-    assert_eq!(m.get(&2), None);
+    assert_eq!(m.get(&1).await, None);
+    assert_eq!(m.get(&2).await, None);
 }
 
 #[test]
-fn clear_with_retain() {
-    let m = CHashMap::new();
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(2, 4).is_none());
-    assert_eq!(m.len(), 2);
+async fn retain() {
+    let map = CHashMap::new();
+    map.insert(1, 8).await;
+    map.insert(2, 9).await;
+    map.insert(3, 4).await;
+    map.insert(4, 7).await;
+    map.insert(5, 2).await;
+    map.insert(6, 5).await;
+    map.insert(7, 2).await;
+    map.insert(8, 3).await;
 
-    m.retain(|_, _| false);
+    map.retain(|key, val| key & 1 == 0 && val & 1 == 1).await;
 
-    assert!(m.is_empty());
-    assert_eq!(m.len(), 0);
+    assert_eq!(map.len(), 4);
 
-    assert_eq!(m.get(&1), None);
-    assert_eq!(m.get(&2), None);
-}
-
-#[test]
-fn retain() {
-    let m = CHashMap::new();
-    m.insert(1, 8);
-    m.insert(2, 9);
-    m.insert(3, 4);
-    m.insert(4, 7);
-    m.insert(5, 2);
-    m.insert(6, 5);
-    m.insert(7, 2);
-    m.insert(8, 3);
-
-    m.retain(|key, val| key & 1 == 0 && val & 1 == 1);
-
-    assert_eq!(m.len(), 4);
-
-    for (key, val) in m {
+    for (key, val) in map {
         assert_eq!(key & 1, 0);
         assert_eq!(val & 1, 1);
     }
@@ -320,7 +323,7 @@ thread_local! { static DROP_VECTOR: RefCell<Vec<isize>> = RefCell::new(Vec::new(
 
 #[derive(Hash, PartialEq, Eq)]
 struct Dropable {
-    k: usize
+    k: usize,
 }
 
 impl Dropable {
@@ -329,7 +332,7 @@ impl Dropable {
             slot.borrow_mut()[k] += 1;
         });
 
-        Dropable { k: k }
+        Dropable { k }
     }
 }
 
@@ -348,7 +351,7 @@ impl Clone for Dropable {
 }
 
 #[test]
-fn drops() {
+async fn drops() {
     DROP_VECTOR.with(|slot| {
         *slot.borrow_mut() = vec![0; 200];
     });
@@ -364,8 +367,8 @@ fn drops() {
 
         for i in 0..100 {
             let d1 = Dropable::new(i);
-            let d2 = Dropable::new(i+100);
-            m.insert(d1, d2);
+            let d2 = Dropable::new(i + 100);
+            m.insert(d1, d2).await;
         }
 
         DROP_VECTOR.with(|v| {
@@ -376,25 +379,25 @@ fn drops() {
 
         for i in 0..50 {
             let k = Dropable::new(i);
-            let v = m.remove(&k);
+            let v = m.remove(&k).await;
 
             assert!(v.is_some());
 
             DROP_VECTOR.with(|v| {
                 assert_eq!(v.borrow()[i], 1);
-                assert_eq!(v.borrow()[i+100], 1);
+                assert_eq!(v.borrow()[i + 100], 1);
             });
         }
 
         DROP_VECTOR.with(|v| {
             for i in 0..50 {
                 assert_eq!(v.borrow()[i], 0);
-                assert_eq!(v.borrow()[i+100], 0);
+                assert_eq!(v.borrow()[i + 100], 0);
             }
 
             for i in 50..100 {
                 assert_eq!(v.borrow()[i], 1);
-                assert_eq!(v.borrow()[i+100], 1);
+                assert_eq!(v.borrow()[i + 100], 1);
             }
         });
     }
@@ -407,7 +410,7 @@ fn drops() {
 }
 
 #[test]
-fn move_iter_drops() {
+async fn move_iter_drops() {
     DROP_VECTOR.with(|v| {
         *v.borrow_mut() = vec![0; 200];
     });
@@ -423,8 +426,8 @@ fn move_iter_drops() {
 
         for i in 0..100 {
             let d1 = Dropable::new(i);
-            let d2 = Dropable::new(i+100);
-            hm.insert(d1, d2);
+            let d2 = Dropable::new(i + 100);
+            hm.insert(d1, d2).await;
         }
 
         DROP_VECTOR.with(|v| {
@@ -437,7 +440,8 @@ fn move_iter_drops() {
     };
 
     // By the way, ensure that cloning doesn't screw up the dropping.
-    drop(hm.clone());
+    // TODO: reimplement Clone
+    //drop(hm.clone());
 
     {
         let mut half = hm.into_iter().take(50);
@@ -451,13 +455,9 @@ fn move_iter_drops() {
         for _ in half.by_ref() {}
 
         DROP_VECTOR.with(|v| {
-            let nk = (0..100).filter(|&i| {
-                v.borrow()[i] == 1
-            }).count();
+            let nk = (0..100).filter(|&i| v.borrow()[i] == 1).count();
 
-            let nv = (0..100).filter(|&i| {
-                v.borrow()[i+100] == 1
-            }).count();
+            let nv = (0..100).filter(|&i| v.borrow()[i + 100] == 1).count();
 
             assert_eq!(nk, 50);
             assert_eq!(nv, 50);
@@ -472,287 +472,300 @@ fn move_iter_drops() {
 }
 
 #[test]
-fn empty_pop() {
-    let m: CHashMap<isize, bool> = CHashMap::new();
-    assert_eq!(m.remove(&0), None);
+async fn empty_pop() {
+    let map: CHashMap<isize, bool> = CHashMap::new();
+    assert_eq!(map.remove(&0).await, None);
 }
 
 #[test]
-fn lots_of_insertions() {
-    let m = CHashMap::new();
+#[ignore]
+async fn lots_of_insertions() {
+    let map = CHashMap::new();
 
     // Try this a few times to make sure we never screw up the hashmap's internal state.
     for _ in 0..10 {
-        assert!(m.is_empty());
+        assert!(map.is_empty());
 
         for i in 1..1001 {
-            assert!(m.insert(i, i).is_none());
+            assert!(map.insert(i, i).await.is_none());
 
-            for j in 1..i+1 {
-                let r = m.get(&j);
+            for j in 1..i + 1 {
+                let r = map.get(&j).await;
                 assert_eq!(*r.unwrap(), j);
             }
 
-            for j in i+1..1001 {
-                let r = m.get(&j);
+            for j in i + 1..1001 {
+                let r = map.get(&j).await;
                 assert_eq!(r, None);
             }
         }
 
         for i in 1001..2001 {
-            assert!(!m.contains_key(&i));
+            assert!(!map.contains_key(&i).await);
         }
 
         // remove forwards
         for i in 1..1001 {
-            assert!(m.remove(&i).is_some());
+            assert!(map.remove(&i).await.is_some());
 
-            for j in 1..i+1 {
-                assert!(!m.contains_key(&j));
+            for j in 1..i + 1 {
+                assert!(!map.contains_key(&j).await);
             }
 
-            for j in i+1..1001 {
-                assert!(m.contains_key(&j));
+            for j in i + 1..1001 {
+                assert!(map.contains_key(&j).await);
             }
         }
 
         for i in 1..1001 {
-            assert!(!m.contains_key(&i));
+            assert!(!map.contains_key(&i).await);
         }
 
         for i in 1..1001 {
-            assert!(m.insert(i, i).is_none());
+            assert!(map.insert(i, i).await.is_none());
         }
 
         // remove backwards
         for i in (1..1001).rev() {
-            assert!(m.remove(&i).is_some());
+            assert!(map.remove(&i).await.is_some());
 
             for j in i..1001 {
-                assert!(!m.contains_key(&j));
+                assert!(!map.contains_key(&j).await);
             }
 
             for j in 1..i {
-                assert!(m.contains_key(&j));
+                assert!(map.contains_key(&j).await);
             }
         }
     }
 }
 
 #[test]
-fn find_mut() {
-    let m = CHashMap::new();
-    assert!(m.insert(1, 12).is_none());
-    assert!(m.insert(2, 8).is_none());
-    assert!(m.insert(5, 14).is_none());
+async fn find_mut() {
+    let map = CHashMap::new();
+    assert!(map.insert(1, 12).await.is_none());
+    assert!(map.insert(2, 8).await.is_none());
+    assert!(map.insert(5, 14).await.is_none());
     let new = 100;
-    match m.get_mut(&5) {
-        None => panic!(), Some(mut x) => *x = new
+    match map.get_mut(&5).await {
+        None => panic!("Entry is empty"),
+        Some(mut x) => *x = new,
     }
-    assert_eq!(*m.get(&5).unwrap(), new);
+    assert_eq!(*map.get(&5).await.unwrap(), new);
 }
 
 #[test]
-fn insert_overwrite() {
+async fn insert_overwrite() {
+    let map = CHashMap::new();
+    assert_eq!(map.len(), 0);
+    assert!(map.insert(1, 2).await.is_none());
+    assert_eq!(map.len(), 1);
+    assert_eq!(*map.get(&1).await.unwrap(), 2);
+    assert_eq!(map.len(), 1);
+    assert!(!map.insert(1, 3).await.is_none());
+    assert_eq!(map.len(), 1);
+    assert_eq!(*map.get(&1).await.unwrap(), 3);
+}
+
+#[test]
+async fn insert_conflicts() {
+    let map = CHashMap::with_capacity(4);
+    assert!(map.insert(1, 2).await.is_none());
+    assert!(map.insert(5, 3).await.is_none());
+    assert!(map.insert(9, 4).await.is_none());
+    assert_eq!(*map.get(&9).await.unwrap(), 4);
+    assert_eq!(*map.get(&5).await.unwrap(), 3);
+    assert_eq!(*map.get(&1).await.unwrap(), 2);
+}
+
+#[test]
+async fn conflict_remove() {
+    let map = CHashMap::with_capacity(4);
+    assert!(map.insert(1, 2).await.is_none());
+    assert_eq!(*map.get(&1).await.unwrap(), 2);
+    assert!(map.insert(5, 3).await.is_none());
+    assert_eq!(*map.get(&1).await.unwrap(), 2);
+    assert_eq!(*map.get(&5).await.unwrap(), 3);
+    assert!(map.insert(9, 4).await.is_none());
+    assert_eq!(*map.get(&1).await.unwrap(), 2);
+    assert_eq!(*map.get(&5).await.unwrap(), 3);
+    assert_eq!(*map.get(&9).await.unwrap(), 4);
+    assert!(map.remove(&1).await.is_some());
+    assert_eq!(*map.get(&9).await.unwrap(), 4);
+    assert_eq!(*map.get(&5).await.unwrap(), 3);
+}
+
+#[test]
+async fn is_empty() {
+    let map = CHashMap::with_capacity(4);
+    assert!(map.insert(1, 2).await.is_none());
+    assert!(!map.is_empty());
+    assert!(map.remove(&1).await.is_some());
+    assert!(map.is_empty());
+}
+
+#[test]
+async fn pop() {
+    let map = CHashMap::new();
+    map.insert(1, 2).await;
+    assert_eq!(map.remove(&1).await, Some(2));
+    assert_eq!(map.remove(&1).await, None);
+}
+
+#[test]
+async fn find() {
     let m = CHashMap::new();
-    assert_eq!(m.len(), 0);
-    assert!(m.insert(1, 2).is_none());
-    assert_eq!(m.len(), 1);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(m.len(), 1);
-    assert!(!m.insert(1, 3).is_none());
-    assert_eq!(m.len(), 1);
-    assert_eq!(*m.get(&1).unwrap(), 3);
-}
-
-#[test]
-fn insert_conflicts() {
-    let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(5, 3).is_none());
-    assert!(m.insert(9, 4).is_none());
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-}
-
-#[test]
-fn conflict_remove() {
-    let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert!(m.insert(5, 3).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert!(m.insert(9, 4).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert!(m.remove(&1).is_some());
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-}
-
-#[test]
-fn is_empty() {
-    let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
-    assert!(!m.is_empty());
-    assert!(m.remove(&1).is_some());
-    assert!(m.is_empty());
-}
-
-#[test]
-fn pop() {
-    let m = CHashMap::new();
-    m.insert(1, 2);
-    assert_eq!(m.remove(&1), Some(2));
-    assert_eq!(m.remove(&1), None);
-}
-
-#[test]
-fn find() {
-    let m = CHashMap::new();
-    assert!(m.get(&1).is_none());
-    m.insert(1, 2);
-    let lock = m.get(&1);
+    assert!(m.get(&1).await.is_none());
+    m.insert(1, 2).await;
+    let lock = m.get(&1).await;
     match lock {
-        None => panic!(),
-        Some(v) => assert_eq!(*v, 2)
+        None => panic!("Entry is empty"),
+        Some(v) => assert_eq!(*v, 2),
     }
 }
 
 #[test]
-fn known_size_with_capacity_matches_shrink() {
-     for i in 0..(MAX_LOAD_FACTOR_DENOM * 4) {
+async fn known_size_with_capacity_matches_shrink() {
+    for i in 0..(MAX_LOAD_FACTOR_DENOM * 4) {
         // Setup a map where we know the number of entries we will store
-        let m = CHashMap::with_capacity(i);
-        let original_capacity = m.capacity();
-        let buckets = m.buckets();
-        assert!(i <= original_capacity, "Expected {} <= {} for {} buckets",
-            i, original_capacity, buckets);
+        let map = CHashMap::with_capacity(i);
+        let original_capacity = map.capacity().await;
+        let buckets = map.buckets().await;
+        assert!(
+            i <= original_capacity,
+            "Expected {} <= {} for {} buckets",
+            i,
+            original_capacity,
+            buckets
+        );
         for j in 0..i {
-            m.insert(j, j);
+            map.insert(j, j).await;
         }
 
         // Make sure inserting didn't increase capacity given we already knew
         // number of entries planned on map construction
-        let grown_capacity = m.capacity();
-        assert_eq!(original_capacity,  grown_capacity,
-            " for {} inserts", i);
+        let grown_capacity = map.capacity().await;
+        assert_eq!(original_capacity, grown_capacity, " for {} inserts", i);
 
         // Shrink it and check that capacity is the same
-        m.shrink_to_fit();
-        let shrunken_capacity = m.capacity();
-        assert_eq!(shrunken_capacity, original_capacity,
-            "Expected {} == {} ", shrunken_capacity, shrunken_capacity);
-     }
+        map.shrink_to_fit().await;
+        let shrunken_capacity = map.capacity().await;
+        assert_eq!(
+            shrunken_capacity, original_capacity,
+            "Expected {} == {} ",
+            shrunken_capacity, shrunken_capacity
+        );
+    }
 }
 
 #[test]
-fn shrink_to_fit_after_insert() {
+async fn shrink_to_fit_after_insert() {
     for i in 0..(MAX_LOAD_FACTOR_DENOM * 4) {
         // Setup
-        let m = CHashMap::new();
+        let map = CHashMap::new();
         for j in 0..i {
-            m.insert(j, j);
+            map.insert(j, j).await;
         }
-        let original_capacity = m.capacity();
+        let original_capacity = map.capacity().await;
 
         // Test
-        m.shrink_to_fit();
-        let shrunken_capacity = m.capacity();
-        assert!(shrunken_capacity <= original_capacity,
+        map.shrink_to_fit().await;
+        let shrunken_capacity = map.capacity().await;
+        assert!(
+            shrunken_capacity <= original_capacity,
             "Unexpected capacity after shrink given {} inserts. Expected {} <= {}",
-            i, shrunken_capacity, original_capacity );
+            i,
+            shrunken_capacity,
+            original_capacity
+        );
     }
 }
 
 #[test]
-fn reserve_shrink_to_fit() {
-    let m = CHashMap::new();
-    m.insert(0, 0);
-    m.remove(&0);
-    assert!(m.capacity() >= m.len());
+async fn reserve_shrink_to_fit() {
+    let map = CHashMap::new();
+    map.insert(0, 0).await;
+    map.remove(&0).await;
+    assert!(map.capacity().await >= map.len());
     for i in 0..128 {
-        m.insert(i, i);
+        map.insert(i, i).await;
     }
-    m.reserve(256);
+    map.reserve(256).await;
 
-    let usable_cap = m.capacity();
+    let usable_cap = map.capacity().await;
     for i in 128..(128 + 256) {
-        m.insert(i, i);
-        assert_eq!(m.capacity(), usable_cap);
+        map.insert(i, i).await;
+        assert_eq!(map.capacity().await, usable_cap);
     }
 
     for i in 100..(128 + 256) {
-        assert_eq!(m.remove(&i), Some(i));
+        assert_eq!(map.remove(&i).await, Some(i));
     }
-    m.shrink_to_fit();
+    map.shrink_to_fit().await;
 
-    assert_eq!(m.len(), 100);
-    assert!(!m.is_empty());
-    assert!(m.capacity() >= m.len());
+    assert_eq!(map.len(), 100);
+    assert!(!map.is_empty());
+    assert!(map.capacity().await >= map.len());
 
     for i in 0..100 {
-        assert_eq!(m.remove(&i), Some(i));
+        assert_eq!(map.remove(&i).await, Some(i));
     }
-    m.shrink_to_fit();
-    m.insert(0, 0);
+    map.shrink_to_fit().await;
+    map.insert(0, 0).await;
 
-    assert_eq!(m.len(), 1);
-    assert!(m.capacity() >= m.len());
-    assert_eq!(m.remove(&0), Some(0));
+    assert_eq!(map.len(), 1);
+    assert!(map.capacity().await >= map.len());
+    assert_eq!(map.remove(&0).await, Some(0));
 }
 
 #[test]
-fn from_iter() {
+async fn from_iter() {
     let xs = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)];
 
     let map: CHashMap<_, _> = xs.iter().cloned().collect();
 
     for &(k, v) in &xs {
-        assert_eq!(*map.get(&k).unwrap(), v);
+        assert_eq!(*map.get(&k).await.unwrap(), v);
     }
 }
 
 #[test]
-fn capacity_not_less_than_len() {
+async fn capacity_not_less_than_len() {
     let a = CHashMap::new();
     let mut item = 0;
 
     for _ in 0..116 {
-        a.insert(item, 0);
+        a.insert(item, 0).await;
         item += 1;
     }
 
-    assert!(a.capacity() > a.len());
+    assert!(a.capacity().await > a.len());
 
-    let free = a.capacity() - a.len();
+    let free = a.capacity().await - a.len();
     for _ in 0..free {
-        a.insert(item, 0);
+        a.insert(item, 0).await;
         item += 1;
     }
 
-    assert_eq!(a.len(), a.capacity());
+    assert_eq!(a.len(), a.capacity().await);
 
     // Insert at capacity should cause allocation.
-    a.insert(item, 0);
-    assert!(a.capacity() > a.len());
+    a.insert(item, 0).await;
+    assert!(a.capacity().await > a.len());
 }
 
 #[test]
-fn insert_into_map_full_of_free_buckets() {
+async fn insert_into_map_full_of_free_buckets() {
     let m = CHashMap::with_capacity(1);
     for i in 0..100 {
-        m.insert(i, 0);
-        m.remove(&i);
+        m.insert(i, 0).await;
+        m.remove(&i).await;
     }
 }
 
 #[test]
-fn lookup_borrowed() {
+async fn lookup_borrowed() {
     let m = CHashMap::with_capacity(1);
-    m.insert("v".to_owned(), "value");
-    m.get("v").unwrap();
+    m.insert("v".to_owned(), "value").await;
+    m.get("v").await.unwrap();
 }
