@@ -7,7 +7,7 @@ description = "Concurrent async hash maps with key-scoped locking"
 repository = "https://gitlab.com/famedly/company/backend/libraries/chashmap"
 documentation = "https://docs.rs/chashmap-async"
 license = "MIT"
-keywords = ["hashmap", "concurrent", "parking_lot", "lock", "map"]
+keywords = ["hashmap", "concurrent", "async", "lock", "map"]
 exclude = ["target", "Cargo.lock"]
 
 [dependencies]
