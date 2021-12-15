@@ -415,7 +415,7 @@ async fn move_iter_drops() {
         *v.borrow_mut() = vec![0; 200];
     });
 
-    let hm = {
+    let mut hm = {
         let hm = CHashMap::new();
 
         DROP_VECTOR.with(|v| {
@@ -440,8 +440,7 @@ async fn move_iter_drops() {
     };
 
     // By the way, ensure that cloning doesn't screw up the dropping.
-    // TODO: reimplement Clone
-    //drop(hm.clone());
+    drop(hm.clone_mut());
 
     {
         let mut half = hm.into_iter().take(50);

@@ -12,6 +12,7 @@ exclude = ["target", "Cargo.lock"]
 
 [dependencies]
 async-lock = "2.4"
+futures = "0.3"
 owning_ref = { version = "0.4.4", package = "owning_ref_async", features = ["async"] }
 stable_deref_trait = "1.0"
 

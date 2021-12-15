@@ -43,6 +43,7 @@
 mod tests;
 
 use async_lock::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use futures::{stream, stream::StreamExt};
 use owning_ref::{OwningHandle, OwningRef};
 use stable_deref_trait::StableDeref;
 use std::borrow::Borrow;
@@ -190,8 +191,6 @@ struct Table<K, V, S> {
 impl<K, V> Table<K, V, RandomState> {
     /// Create a table with a certain number of buckets.
     fn new(buckets: usize) -> Self {
-        // TODO: For some obscure reason `RwLock` doesn't implement `Clone`.
-
         // Fill a vector with `buckets` of `Empty` buckets.
         let mut vec = Vec::with_capacity(buckets);
         for _ in 0..buckets {
@@ -218,13 +217,9 @@ impl<K, V> Table<K, V, RandomState> {
 impl<K, V, S: BuildHasher> Table<K, V, S> {
     /// Create a `Table` with the `BuildHasher`
     fn with_hasher(buckets: usize, hash_builder: S) -> Self {
-        // TODO: For some obscure reason `RwLock` doesn't implement `Clone`.
-
         // Fill a vector with `buckets` of `Empty` buckets.
         let mut vec = Vec::with_capacity(buckets);
-        for _ in 0..buckets {
-            vec.push(RwLock::new(Bucket::Empty));
-        }
+        vec.resize_with(buckets, || RwLock::new(Bucket::Empty));
 
         Table {
             hash_builder,
@@ -474,8 +469,10 @@ impl<K: PartialEq + Hash, V, S: BuildHasher> Table<K, V, S> {
     }
 }
 
-/*impl<K: Clone, V: Clone, S: Clone> Clone for Table<K, V, S> {
-    fn clone(&self) -> Self {
+impl<K: Clone, V: Clone, S: Clone> Table<K, V, S> {
+    /// Clone the struct, bypassing the locks by the statically guaranteed exclusive `&mut` access.
+    /// Not that the map is not actually mutated.
+    pub fn clone_mut(&mut self) -> Self {
         Table {
             // Since we copy plainly without rehashing etc., it is important that we keep the same
             // hash function.
@@ -483,13 +480,26 @@ impl<K: PartialEq + Hash, V, S: BuildHasher> Table<K, V, S> {
             // Lock and clone every bucket individually.
             buckets: self
                 .buckets
-                .iter()
-                // TODO: NO NO VERY BAD
-                .map(|x| RwLock::new(futures::executor::block_on(x.read()).clone()))
+                .iter_mut()
+                .map(|x| RwLock::new(x.get_mut().clone()))
                 .collect(),
         }
     }
-}*/
+
+    /// Clone by accessing keys and values via the locks. That requires this method to be `async`.
+    pub async fn clone_locking(&self) -> Self {
+        Table {
+            // Since we copy plainly without rehashing etc., it is important that we keep the same
+            // hash function.
+            hash_builder: self.hash_builder.clone(),
+            // Lock and clone every bucket individually.
+            buckets: stream::iter(self.buckets.iter())
+                .then(|x| async move { RwLock::new(x.read().await.clone()) })
+                .collect()
+                .await,
+        }
+    }
+}
 
 impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for Table<K, V, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1221,20 +1231,30 @@ impl<K, V, S: Default + BuildHasher> Default for CHashMap<K, V, S> {
     }
 }
 
-/*impl<K: Clone, V: Clone, S: Clone> Clone for CHashMap<K, V, S> {
-    fn clone(&self) -> Self {
+impl<K: Clone, V: Clone, S: Clone> CHashMap<K, V, S> {
+    /// Clone the struct, bypassing the locks by the statically guaranteed exclusive `&mut` access.
+    /// Not that the map is not actually mutated.
+    pub fn clone_mut(&mut self) -> Self {
         CHashMap {
-            table: RwLock::new(self.table.read().clone()),
+            table: RwLock::new(self.table.get_mut().clone_mut()),
             len: AtomicUsize::new(self.len.load(ORDERING)),
         }
     }
-}*/
 
-/*impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for CHashMap<K, V, S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        (*self.table.read()).fmt(f)
+    /// Clone by accessing keys and values via the locks. That requires this method to be `async`.
+    pub async fn clone_locking(&self) -> Self {
+        CHashMap {
+            table: RwLock::new(self.table.read().await.clone_locking().await),
+            len: AtomicUsize::new(self.len.load(ORDERING)),
+        }
     }
-}*/
+}
+
+impl<K: fmt::Debug, V: fmt::Debug, S> fmt::Debug for CHashMap<K, V, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "CHashMap {{<{} entries>}}", self.len())
+    }
+}
 
 impl<K, V, S> IntoIterator for CHashMap<K, V, S> {
     type Item = (K, V);
